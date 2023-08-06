@@ -1,6 +1,8 @@
 mod future;
 mod runtime;
 
+pub use future::PollOnce;
+
 pub use runtime::LocalPool;
 
 #[cfg(target_arch = "x86_64")]

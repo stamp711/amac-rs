@@ -6,7 +6,7 @@ use std::{
     task::Poll,
 };
 
-use amac::{async_load, prefetch, LocalPool};
+use amac::{async_load, prefetch, LocalPool, PollOnce};
 use clf::cache_line_flush_with_slice;
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
 use futures::Future;
@@ -66,12 +66,13 @@ fn binary_search_amac_manual_execute(v: &[i32], targets: &[i32]) {
         .iter()
         .map(|target| binary_search_amac_inner(v, *target))
         .collect::<Vec<_>>();
-    let mut futs = Vec::new();
+    let mut futs = Vec::with_capacity(futures.len());
     for fut in &mut futures {
         let pf = unsafe { Pin::new_unchecked(fut) };
         futs.push(pf);
     }
 
+    let cx = &mut futures::task::Context::from_waker(futures::task::noop_waker_ref());
     while !futs.is_empty() {
         for i in 0..futs.len() {
             loop {
@@ -80,9 +81,7 @@ fn binary_search_amac_manual_execute(v: &[i32], targets: &[i32]) {
                     None => break,
                 };
 
-                match Pin::new(&mut bs).poll(&mut futures::task::Context::from_waker(
-                    futures::task::noop_waker_ref(),
-                )) {
+                match Pin::new(&mut bs).poll(cx) {
                     Poll::Pending => break,
                     Poll::Ready(_) => {
                         futs.swap_remove(i);
@@ -101,7 +100,10 @@ async fn binary_search_amac_inner(v: &[i32], target: i32) {
         let mid = (left + right) / 2;
         let mid_ref = unsafe { v.get_unchecked(mid) };
 
-        if *async_load(mid_ref).await < target {
+        prefetch(mid_ref);
+        PollOnce::new().await;
+
+        if *mid_ref < target {
             left = mid + 1;
         } else {
             right = mid;
@@ -111,7 +113,10 @@ async fn binary_search_amac_inner(v: &[i32], target: i32) {
     let res = if left == v.len() {
         None
     } else {
-        Some(unsafe { v.get_unchecked(left) })
+        let r = unsafe { v.get_unchecked(left) };
+        prefetch(r);
+        PollOnce::new().await;
+        Some(r)
     };
 
     let _ = black_box(res);
@@ -122,7 +127,7 @@ fn binary_search_amac_generator_manual_execute(v: &[i32], targets: &[i32]) {
         .iter()
         .map(|target| binary_search_amac_inner_generator(v, *target))
         .collect::<Vec<_>>();
-    let mut bss = Vec::new();
+    let mut bss = Vec::with_capacity(gens.len());
     for gen in &mut gens {
         let bs = Pin::new(gen);
         bss.push(bs);
@@ -158,6 +163,7 @@ fn binary_search_amac_inner_generator(
         while left < right {
             let mid = (left + right) / 2;
             let mid_ref = unsafe { v.get_unchecked(mid) };
+
             prefetch(mid_ref);
             yield;
 
@@ -171,7 +177,10 @@ fn binary_search_amac_inner_generator(
         let res = if left == v.len() {
             None
         } else {
-            Some(unsafe { v.get_unchecked(left) })
+            let r = unsafe { v.get_unchecked(left) };
+            prefetch(r);
+            yield;
+            Some(r)
         };
 
         let _ = black_box(res);
@@ -180,7 +189,7 @@ fn binary_search_amac_inner_generator(
 
 fn criterion_benchmark(c: &mut Criterion) {
     let vec = gen_vec(256 * 1024 * 1024);
-    let targets = gen_vec(1000);
+    let targets = gen_vec(300);
 
     let mut group = c.benchmark_group("binary_search");
 
