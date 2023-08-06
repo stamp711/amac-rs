@@ -1,38 +1,18 @@
-#![feature(core_intrinsics)]
-
-use std::intrinsics::prefetch_read_data;
-
 mod future;
 mod runtime;
 
+pub use future::PollOnce;
 pub use runtime::LocalPool;
 
-#[derive(Debug, Clone)]
-pub struct AsyncPrefetch<T> {
-    inner: T,
+#[cfg(target_arch = "x86_64")]
+pub fn prefetch<T>(reference: &T) {
+    use std::arch::x86_64::{_mm_prefetch, _MM_HINT_NTA};
+    let pointer: *const _ = &*reference;
+    unsafe { _mm_prefetch(pointer as _, _MM_HINT_NTA) }
 }
 
-impl<T> AsyncPrefetch<T> {
-    pub fn new(inner: T) -> Self {
-        Self { inner }
-    }
-}
-
-impl<T> AsyncPrefetch<T> {
-    pub async fn prefetch_load<U>(&self) -> &U
-    where
-        T: AsRef<U>,
-    {
-        let ptr = self.inner.as_ref() as *const U;
-        unsafe { prefetch_read_data(ptr, 0) };
-        future::PollOnce::new().await;
-        self.inner.as_ref()
-    }
-
-    pub fn load<U>(&self) -> &U
-    where
-        T: AsRef<U>,
-    {
-        self.inner.as_ref()
-    }
+pub async fn async_load<T>(r: &T) -> &T {
+    prefetch(r);
+    future::PollOnce::new().await;
+    r
 }
